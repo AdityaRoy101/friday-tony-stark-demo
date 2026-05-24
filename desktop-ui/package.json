@@ -1,0 +1,44 @@
+{
+  "name": "friday-desktop-ui",
+  "version": "1.0.0",
+  "description": "Friday Desktop LiveKit Playground UI - Electron + React + TypeScript",
+  "license": "Apache-2.0",
+  "author": "Friday AI",
+  "type": "module",
+  "main": "out/main/main.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@livekit/components-react": "^2.7.0",
+    "@livekit/components-styles": "^1.0.10",
+    "electron-log": "^5.2.0",
+    "framer-motion": "^11.11.0",
+    "livekit-client": "^2.5.0",
+    "livekit-server-sdk": "^2.7.0",
+    "qrcode.react": "^4.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.9.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^5.2.0",
+    "autoprefixer": "^10.4.20",
+    "electron": "^42.2.0",
+    "electron-vite": "^5.0.0",
+    "eslint": "^10.4.0",
+    "globals": "^17.6.0",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.59.4",
+    "vite": "^7.3.3"
+  }
+}

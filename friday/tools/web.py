@@ -2,11 +2,15 @@
 Web tools — search, fetch pages, and global news briefings.
 """
 
-import httpx
-import xml.etree.ElementTree as ET
-import asyncio  # Required for parallel execution
+import asyncio
+import html
 import re
-from datetime import datetime
+import webbrowser
+import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
+from urllib.parse import parse_qs, unquote, urlparse
+
+import httpx
 
 SEED_FEEDS = [
     'https://feeds.bbci.co.uk/news/world/rss.xml',
@@ -22,6 +26,74 @@ FINANCE_SEED_FEEDS = [
     'https://feeds.marketwatch.com/marketwatch/topstories/',       # MarketWatch
     'https://rss.nytimes.com/services/xml/rss/nyt/Business.xml',  # NYT Business
 ]
+
+
+class _DuckDuckGoParser(HTMLParser):
+    """Small parser for DuckDuckGo's lightweight HTML results page."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.results = []
+        self._active_title = None
+        self._active_snippet = False
+        self._text = []
+
+    def handle_starttag(self, tag, attrs):
+        attr = dict(attrs)
+        classes = attr.get("class", "")
+        if tag == "a" and "result__a" in classes:
+            self._active_title = attr.get("href", "")
+            self._text = []
+        elif "result__snippet" in classes:
+            self._active_snippet = True
+            self._text = []
+
+    def handle_data(self, data):
+        if self._active_title is not None or self._active_snippet:
+            self._text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self._active_title is not None:
+            title = _clean_text(" ".join(self._text))
+            if title:
+                self.results.append({"title": title, "url": _normalize_ddg_url(self._active_title), "snippet": ""})
+            self._active_title = None
+            self._text = []
+        elif self._active_snippet:
+            snippet = _clean_text(" ".join(self._text))
+            if snippet and self.results:
+                self.results[-1]["snippet"] = snippet
+            self._active_snippet = False
+            self._text = []
+
+
+def _clean_text(text: str) -> str:
+    text = html.unescape(re.sub(r"\s+", " ", text or "")).strip()
+    return text
+
+
+def _strip_html(text: str) -> str:
+    text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", text)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    return _clean_text(text)
+
+
+def _normalize_ddg_url(url: str) -> str:
+    if url.startswith("//"):
+        url = f"https:{url}"
+    parsed = urlparse(url)
+    if "duckduckgo.com" in parsed.netloc and parsed.path.startswith("/l/"):
+        target = parse_qs(parsed.query).get("uddg", [""])[0]
+        if target:
+            return unquote(target)
+    return url
+
+
+def _validate_web_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Only full http or https URLs are supported.")
+    return parsed.geturl()
 
 async def fetch_and_parse_feed(client, url):
     """Helper function to handle a single feed request and parse its XML."""
@@ -113,17 +185,64 @@ def register(mcp):
         return "\n".join(report)
 
     @mcp.tool()
-    async def search_web(query: str) -> str:
-        """Search the web for a given query and return a summary of results."""
-        return f"[stub] Search results for: {query}"
+    async def search_web(query: str, max_results: int = 5) -> str:
+        """
+        Search the web and return source-linked results.
+        Use this for current facts, unfamiliar topics, or anything likely to have changed recently.
+        """
+        query = _clean_text(query)
+        if not query:
+            return "Search query is empty."
+
+        max_results = max(1, min(max_results, 8))
+        async with httpx.AsyncClient(follow_redirects=True, timeout=8) as client:
+            response = await client.get(
+                "https://duckduckgo.com/html/",
+                params={"q": query},
+                headers={"User-Agent": "Friday-AI/1.0"},
+            )
+            response.raise_for_status()
+
+        parser = _DuckDuckGoParser()
+        parser.feed(response.text)
+        results = parser.results[:max_results]
+        if not results:
+            return f"No useful search results found for: {query}"
+
+        lines = [f"SEARCH RESULTS for: {query}"]
+        for index, result in enumerate(results, 1):
+            lines.append(f"{index}. {result['title']}")
+            if result["snippet"]:
+                lines.append(f"   {result['snippet'][:300]}")
+            lines.append(f"   Source: {result['url']}")
+        return "\n".join(lines)
 
     @mcp.tool()
     async def fetch_url(url: str) -> str:
-        """Fetch the raw text content of a URL."""
+        """Fetch readable text content from a public http/https URL."""
+        url = _validate_web_url(url)
         async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
             response = await client.get(url)
             response.raise_for_status()
-            return response.text[:4000]
+            content_type = response.headers.get("content-type", "")
+            if "html" in content_type:
+                text = _strip_html(response.text)
+            else:
+                text = _clean_text(response.text)
+            return text[:6000]
+
+    @mcp.tool()
+    async def open_url(url: str) -> str:
+        """
+        Open a public http/https URL in the user's default browser.
+        Use only when the user explicitly asks to open, show, or pull up a page.
+        """
+        url = _validate_web_url(url)
+        try:
+            webbrowser.open(url)
+            return f"Opened: {url}"
+        except Exception as exc:
+            return f"I couldn't open that page: {exc}"
     
     @mcp.tool()
     async def open_world_monitor() -> str:
@@ -131,7 +250,6 @@ def register(mcp):
         Opens the World Monitor dashboard (worldmonitor.app) in the system's web browser.
         Use this when the user wants a visual overview of global events or a real-time map.
         """
-        import webbrowser
         url = "https://worldmonitor.app/"
         
         try:
@@ -146,7 +264,6 @@ def register(mcp):
         Opens the Finance World Monitor dashboard (finance.worldmonitor.app) in the system's web browser.
         Use this when the user wants a visual overview of global financial markets and trends.
         """
-        import webbrowser
         url = "https://finance.worldmonitor.app/"
 
         try:

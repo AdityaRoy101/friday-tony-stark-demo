@@ -11,5 +11,7 @@ def register(mcp):
         return (
             "Friday MCP Server\n"
             "A Tony Stark-inspired AI assistant.\n"
-            "Built with FastMCP."
+            "Built with FastMCP.\n"
+            "Capabilities: news, finance news, web search, URL fetch/open, "
+            "system snapshot, math, JSON/text utilities, and explicit memory."
         )
