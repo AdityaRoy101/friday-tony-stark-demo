@@ -1,5 +1,8 @@
 import { app, BrowserWindow, ipcMain, screen, session } from 'electron';
-import { AccessToken, RoomAgentDispatch, RoomConfiguration } from 'livekit-server-sdk';
+import {
+  AccessToken,
+  AgentDispatchClient,
+} from 'livekit-server-sdk';
 import path from 'path';
 import fs from 'fs';
 import net from 'net';
@@ -199,6 +202,18 @@ function getLiveKitMode(livekitUrl: string): 'local' | 'cloud' {
   }
 }
 
+function getLiveKitServiceUrl(livekitUrl: string): string {
+  const parsedUrl = new URL(livekitUrl);
+  if (parsedUrl.protocol === 'ws:') {
+    parsedUrl.protocol = 'http:';
+  } else if (parsedUrl.protocol === 'wss:') {
+    parsedUrl.protocol = 'https:';
+  }
+
+  parsedUrl.pathname = parsedUrl.pathname.replace(/\/+$/, '');
+  return parsedUrl.toString().replace(/\/$/, '');
+}
+
 function checkTcpPort(host: string, port: number, timeoutMs = 1500): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = net.createConnection({ host, port });
@@ -276,6 +291,81 @@ async function assertLocalLiveKitReachable(livekitUrl: string) {
   }
 }
 
+async function dispatchAgentToRoom(params: {
+  roomName: string;
+  agentName: string;
+  metadata?: string;
+}) {
+  const apiKey = envConfig.LIVEKIT_API_KEY;
+  const apiSecret = envConfig.LIVEKIT_API_SECRET;
+  const livekitUrl = envConfig.LIVEKIT_URL;
+
+  if (!apiKey || !apiSecret || !livekitUrl) {
+    throw new Error('LiveKit credentials not configured. Please set LIVEKIT_API_KEY, LIVEKIT_API_SECRET, and LIVEKIT_URL in .env.local');
+  }
+
+  await assertLocalLiveKitReachable(livekitUrl);
+
+  const client = new AgentDispatchClient(getLiveKitServiceUrl(livekitUrl), apiKey, apiSecret);
+  const existingDispatches = await client.listDispatch(params.roomName).catch((error: unknown) => {
+    debugLog('[friday] unable to list agent dispatches before create', {
+      roomName: params.roomName,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  });
+  const matchingDispatches = existingDispatches.filter(
+    (dispatch) => dispatch.agentName === params.agentName,
+  );
+  const existing = matchingDispatches.find((dispatch) => (dispatch.state?.jobs?.length ?? 0) > 0);
+
+  if (existing) {
+    debugLog('[friday] reusing existing agent dispatch', {
+      roomName: params.roomName,
+      agentName: params.agentName,
+      dispatchId: existing.id,
+    });
+    return {
+      dispatchId: existing.id,
+      agentName: existing.agentName,
+      roomName: existing.room,
+      reused: true,
+    };
+  }
+
+  for (const dispatch of matchingDispatches) {
+    debugLog('[friday] deleting stale agent dispatch before create', {
+      roomName: params.roomName,
+      agentName: params.agentName,
+      dispatchId: dispatch.id,
+      jobs: dispatch.state?.jobs?.length ?? 0,
+    });
+    await client.deleteDispatch(dispatch.id, params.roomName).catch((error: unknown) => {
+      debugLog('[friday] failed to delete stale dispatch', {
+        roomName: params.roomName,
+        dispatchId: dispatch.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
+  debugLog('[friday] creating explicit agent dispatch', {
+    roomName: params.roomName,
+    agentName: params.agentName,
+  });
+
+  const dispatch = await client.createDispatch(params.roomName, params.agentName, {
+    metadata: params.metadata,
+  });
+
+  return {
+    dispatchId: dispatch.id,
+    agentName: dispatch.agentName,
+    roomName: dispatch.room,
+    reused: false,
+  };
+}
+
 ipcMain.handle('friday:createToken', async (_event, params: {
   roomName: string;
   participantName: string;
@@ -316,24 +406,24 @@ ipcMain.handle('friday:createToken', async (_event, params: {
     canUpdateOwnMetadata: true,
   });
 
-  if (params.agentName) {
-    token.roomConfig = new RoomConfiguration({
-      name: params.roomName,
-      agents: [
-        new RoomAgentDispatch({
-          agentName: params.agentName,
-          metadata: params.agentMetadata,
-        }),
-      ],
-    });
-  }
-
   const jwt = await token.toJwt();
 
   return {
     serverUrl: livekitUrl,
     participantToken: jwt,
   };
+});
+
+ipcMain.handle('friday:dispatchAgent', async (_event, params: {
+  roomName: string;
+  agentName: string;
+  metadata?: string;
+}) => {
+  if (!params.roomName || !params.agentName) {
+    throw new Error('Cannot dispatch agent without roomName and agentName');
+  }
+
+  return dispatchAgentToRoom(params);
 });
 
 ipcMain.handle('friday:getEnv', async () => {

@@ -18,6 +18,7 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $DesktopUiRoot = Join-Path $RepoRoot "desktop-ui"
 $LogDir = Join-Path $RepoRoot "logs"
+$PythonExe = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 function Test-TcpPort {
@@ -251,6 +252,10 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     throw "uv is not installed or not on PATH."
 }
 
+if (-not (Test-Path -LiteralPath $PythonExe)) {
+    throw "Missing Python virtual environment at $PythonExe. Run `uv sync` first."
+}
+
 if (-not $SkipDesktopUi -and -not (Get-Command npm -ErrorAction SilentlyContinue)) {
     throw "npm is not installed or not on PATH."
 }
@@ -278,7 +283,7 @@ if (-not $SkipMcp) {
         $mcpProcess = Start-LoggedProcess `
             -Name "friday-mcp" `
             -WorkingDirectory $RepoRoot `
-            -Command "uv run friday"
+            -Command "& .\.venv\Scripts\python.exe server.py"
         $started += $mcpProcess
         if (-not $DryRun) {
             Wait-ForPort -Name "MCP server" -Port $McpPort -TimeoutSeconds 25 -ProcessInfo $mcpProcess
@@ -294,14 +299,14 @@ else {
 
 if (-not $SkipVoiceAgent) {
     $voicePidPath = Join-Path $LogDir "friday-voice.pid"
-    if (Test-LoggedProcessRunning -PidPath $voicePidPath -CommandPattern "friday_voice|uv(.exe)?\s+run\s+friday_voice") {
+    if (Test-LoggedProcessRunning -PidPath $voicePidPath -CommandPattern "agent_friday\.py|friday_voice|uv(.exe)?\s+run\s+friday_voice") {
         Write-Host "Friday voice agent is already running."
     }
     else {
         $voiceProcess = Start-LoggedProcess `
             -Name "friday-voice" `
             -WorkingDirectory $RepoRoot `
-            -Command "uv run friday_voice"
+            -Command "& .\.venv\Scripts\python.exe agent_friday.py dev"
         $started += $voiceProcess
         if (-not $DryRun) {
             Wait-ForLogPattern -Name "Friday voice agent" -LogPath $voiceProcess.StdoutLog -Pattern "registered worker" -TimeoutSeconds $VoiceAgentReadyTimeoutSeconds -ProcessInfo $voiceProcess

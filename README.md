@@ -18,7 +18,7 @@ Demo: [Instagram reel](https://www.instagram.com/p/DW2HjYtkwg_/)
 ## How it works
 
 ```
-Microphone ──► STT (Sarvam Saaras v3)
+Microphone ──► STT (local Parakeet V3)
                     │
                     ▼
              LLM (OpenAI default)    ◄──────► MCP Server (FastMCP / SSE)
@@ -148,7 +148,8 @@ Copy `.env.example` → `.env` and fill in the values below.
 | `LIVEKIT_API_KEY` | ✅ | Local: `devkey`; Cloud: LiveKit Cloud API key |
 | `LIVEKIT_API_SECRET` | ✅ | Local: `secret`; Cloud: LiveKit Cloud API secret |
 | `GROQ_API_KEY` | optional | [console.groq.com](https://console.groq.com) — only needed if you switch `LLM_PROVIDER` to `"groq"` |
-| `SARVAM_API_KEY` | ✅ (default STT) | [dashboard.sarvam.ai](https://dashboard.sarvam.ai) |
+| `SHERPA_ONNX_MODEL_DIR` | ✅ (default STT) | Local Parakeet V3 model directory. Supports Sherpa-ONNX layout or Handy layout. |
+| `SARVAM_API_KEY` | optional | [dashboard.sarvam.ai](https://dashboard.sarvam.ai) — only needed if `STT_PROVIDER=sarvam` |
 | `OPENAI_API_KEY` | ✅ (default LLM/TTS) | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
 | `DEEPGRAM_API_KEY` | optional | [console.deepgram.com](https://console.deepgram.com) |
 | `GOOGLE_APPLICATION_CREDENTIALS` | optional | GCP service-account JSON path — only for `STT_PROVIDER = "google"` |
@@ -163,13 +164,18 @@ Copy `.env.example` → `.env` and fill in the values below.
 Set these in `.env` so provider changes do not require code edits:
 
 ```dotenv
-STT_PROVIDER=sarvam
+STT_PROVIDER=sherpa
 LLM_PROVIDER=openai
 TTS_PROVIDER=openai
 FRIDAY_MODE=balanced
+FRIDAY_PREEMPTIVE_GENERATION=false
+FRIDAY_TURN_DETECTOR=english
+FRIDAY_TURN_ENDPOINTING_MODE=dynamic
 OPENAI_LLM_MODEL=gpt-4o
 OPENAI_LLM_TEMPERATURE=0.35
 OPENAI_LLM_MAX_TOKENS=220
+SHERPA_ONNX_MODEL_DIR=C:\Users\aa986\AppData\Roaming\com.pais.handy\models\parakeet-tdt-0.6b-v3-int8
+SHERPA_ONNX_NUM_THREADS=4
 SARVAM_STT_LANGUAGE=en-IN
 SARVAM_STT_MODEL=saaras:v3
 ```
@@ -177,10 +183,20 @@ SARVAM_STT_MODEL=saaras:v3
 Latency-sensitive turn handling is also configurable from `.env`:
 
 ```dotenv
-FRIDAY_MAX_ENDPOINTING_DELAY=0.45
-FRIDAY_MIN_INTERRUPTION_DURATION=0.28
+FRIDAY_MAX_ENDPOINTING_DELAY=0.80
+FRIDAY_VAD_MIN_SPEECH_DURATION=0.04
+FRIDAY_VAD_MIN_SILENCE_DURATION=0.48
+FRIDAY_VAD_PREFIX_PADDING_DURATION=0.35
+FRIDAY_VAD_ACTIVATION_THRESHOLD=0.42
+FRIDAY_VAD_DEACTIVATION_THRESHOLD=0.25
+FRIDAY_MIN_INTERRUPTION_DURATION=0.32
 FRIDAY_MIN_INTERRUPTION_WORDS=1
 ```
+
+Local Parakeet runs as a fast offline recognizer. LiveKit's Silero VAD wrapper
+segments each user turn, then flushes one speech chunk into Parakeet for decoding.
+The LiveKit turn detector adds context-aware end-of-turn prediction on top of
+VAD so Friday is less likely to answer halfway through an unfinished sentence.
 
 ---
 
@@ -212,7 +228,7 @@ The MCP server will pick it up on next start.
 
 - **[FastMCP](https://github.com/jlowin/fastmcp)** — MCP server framework
 - **[LiveKit Agents](https://github.com/livekit/agents)** — real-time voice pipeline
-- **Sarvam Saaras v3** — STT (Indian-English optimised)
+- **Local Parakeet V3** — default STT (Handy or Sherpa-ONNX layout)
 - **OpenAI / Google Gemini** — configurable LLM
 - **OpenAI TTS** (`nova` voice) — TTS
 - **[uv](https://github.com/astral-sh/uv)** — fast Python package manager

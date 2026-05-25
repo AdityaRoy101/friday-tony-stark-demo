@@ -9,7 +9,10 @@ dependencies = [
     "httpx",
     "livekit-agents[deepgram,groq,openai,sarvam,silero]>=1.5.1",
     "livekit-plugins-google>=1.5.1",
+    "livekit-plugins-turn-detector>=1.5.1",
+    "onnxruntime>=1.24.4",
     "python-dotenv",
+    "sherpa-onnx>=1.13.2",
 ]
 
 [project.scripts]

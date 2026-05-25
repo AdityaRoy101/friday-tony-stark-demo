@@ -15,6 +15,19 @@ export interface TokenResponse {
   participantToken: string;
 }
 
+export interface DispatchAgentParams {
+  roomName: string;
+  agentName: string;
+  metadata?: string;
+}
+
+export interface DispatchAgentResponse {
+  dispatchId: string;
+  agentName: string;
+  roomName: string;
+  reused: boolean;
+}
+
 export interface EnvConfig {
   livekitUrl: string;
   livekitMode: 'local' | 'cloud';
@@ -45,6 +58,9 @@ export interface MemoryResponse {
 const api = {
   createToken: (params: CreateTokenParams): Promise<TokenResponse> => {
     return ipcRenderer.invoke('friday:createToken', params);
+  },
+  dispatchAgent: (params: DispatchAgentParams): Promise<DispatchAgentResponse> => {
+    return ipcRenderer.invoke('friday:dispatchAgent', params);
   },
   getEnv: (): Promise<EnvConfig> => {
     return ipcRenderer.invoke('friday:getEnv');

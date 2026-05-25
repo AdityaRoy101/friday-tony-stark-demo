@@ -76,6 +76,8 @@ function Stop-StaleStackProcesses {
         (Join-Path $RepoRoot "tools\livekit-server\livekit-server.exe"),
         (Join-Path $RepoRoot ".venv\Scripts\friday_voice.exe"),
         (Join-Path $RepoRoot ".venv\Scripts\friday.exe"),
+        (Join-Path $RepoRoot "agent_friday.py"),
+        (Join-Path $RepoRoot "server.py"),
         (Join-Path $DesktopUiRoot "node_modules\electron"),
         (Join-Path $DesktopUiRoot "node_modules\electron-vite"),
         (Join-Path $DesktopUiRoot "node_modules\.bin"),

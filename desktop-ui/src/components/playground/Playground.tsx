@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   BarVisualizer,
   LiveKitRoom,
@@ -28,6 +28,7 @@ function PlaygroundContent({ config, onConnected, onDisconnect }: PlaygroundProp
   const [activeTab, setActiveTab] = useState<'chat' | 'voice' | 'settings'>('chat');
   const [error, setError] = useState<string | null>(null);
   const [hasEverConnected, setHasEverConnected] = useState(false);
+  const dispatchedAgentKeys = useRef(new Set<string>());
   const room = useRoomContext();
   const connectionState = useConnectionState();
   const voiceAssistant = useVoiceAssistant();
@@ -42,6 +43,32 @@ function PlaygroundContent({ config, onConnected, onDisconnect }: PlaygroundProp
       setError((currentError) => currentError ?? 'Disconnected from room');
     }
   }, [connectionState, hasEverConnected, onConnected]);
+
+  useEffect(() => {
+    if (connectionState !== ConnectionState.Connected || !config.agentName || !window.fridayLiveKit?.dispatchAgent) {
+      return;
+    }
+
+    const dispatchKey = `${config.roomName}:${config.agentName}`;
+    if (dispatchedAgentKeys.current.has(dispatchKey)) {
+      return;
+    }
+
+    dispatchedAgentKeys.current.add(dispatchKey);
+    window.fridayLiveKit.dispatchAgent({
+      roomName: config.roomName,
+      agentName: config.agentName,
+      metadata: JSON.stringify({
+        source: 'friday-desktop-ui',
+        participantIdentity: config.participant.identity,
+      }),
+    }).then((dispatch) => {
+      console.info('Friday agent dispatched', dispatch);
+    }).catch((err) => {
+      dispatchedAgentKeys.current.delete(dispatchKey);
+      setError(err instanceof Error ? `Agent dispatch failed: ${err.message}` : 'Agent dispatch failed');
+    });
+  }, [config.agentName, config.participant.identity, config.roomName, connectionState]);
 
   const handleDisconnect = () => {
     setError(null);
@@ -344,7 +371,11 @@ export default function Playground(props: PlaygroundProps) {
       serverUrl={props.config.serverUrl}
       token={props.config.token}
       connect={true}
-      audio={true}
+      audio={{
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      }}
       video={false}
       onConnected={handleConnected}
       onDisconnected={handleDisconnected}

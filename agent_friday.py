@@ -19,12 +19,14 @@ import logging
 import re
 import subprocess
 import time
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 from livekit.agents import JobContext, WorkerOptions, cli
 from livekit.agents.voice import Agent, AgentSession
 from livekit.agents.llm import mcp
+from friday.stt import SherpaParakeetSTT
 
 # Plugins
 from livekit.plugins import google as lk_google, openai as lk_openai, sarvam, silero
@@ -55,6 +57,29 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _default_sherpa_parakeet_dir() -> str:
+    handy_model_name = "parakeet-tdt-0.6b-v3-int8"
+    sherpa_model_name = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8"
+    candidates = [
+        Path.home() / "AppData" / "Roaming" / "com.pais.handy" / "models" / handy_model_name,
+        Path(__file__).resolve().parent / "models" / handy_model_name,
+        Path(__file__).resolve().parent / "models" / sherpa_model_name,
+        Path.home() / "OneDrive" / "Desktop" / "Friday_agent" / "sherpa-onnx-models" / sherpa_model_name,
+        Path.home() / "Desktop" / "Friday_agent" / "sherpa-onnx-models" / sherpa_model_name,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return str(candidates[0])
+
+
 FRIDAY_MODE = _env("FRIDAY_MODE", "balanced").lower()
 MODE_PRESETS = {
     "fast": {
@@ -62,23 +87,32 @@ MODE_PRESETS = {
         "temperature": 0.25,
         "max_endpointing": 0.28,
         "interruption_duration": 0.18,
+        "vad_min_silence": 0.24,
+        "vad_prefix_padding": 0.18,
+        "vad_activation_threshold": 0.35,
     },
     "balanced": {
         "max_tokens": 220,
         "temperature": 0.35,
-        "max_endpointing": 0.45,
-        "interruption_duration": 0.28,
+        "max_endpointing": 0.80,
+        "interruption_duration": 0.32,
+        "vad_min_silence": 0.48,
+        "vad_prefix_padding": 0.35,
+        "vad_activation_threshold": 0.42,
     },
     "accurate": {
         "max_tokens": 320,
         "temperature": 0.3,
-        "max_endpointing": 0.85,
-        "interruption_duration": 0.38,
+        "max_endpointing": 1.25,
+        "interruption_duration": 0.42,
+        "vad_min_silence": 0.65,
+        "vad_prefix_padding": 0.45,
+        "vad_activation_threshold": 0.45,
     },
 }
 MODE = MODE_PRESETS.get(FRIDAY_MODE, MODE_PRESETS["balanced"])
 
-STT_PROVIDER = _env("STT_PROVIDER", "sarvam").lower()
+STT_PROVIDER = _env("STT_PROVIDER", "sherpa").lower()
 LLM_PROVIDER = _env("LLM_PROVIDER", "openai").lower()
 TTS_PROVIDER = _env("TTS_PROVIDER", "openai").lower()
 FRIDAY_ENABLE_PROVIDER_FALLBACKS = _env("FRIDAY_ENABLE_PROVIDER_FALLBACKS", "true").lower() == "true"
@@ -91,6 +125,13 @@ SARVAM_STT_PROMPT = _env(
     "Common words and names: Friday, Jarvis, LiveKit, OpenAI, Sarvam, "
     "Tony Stark, world monitor, finance monitor, dashboard, latency.",
 )
+SHERPA_ONNX_MODEL_DIR = _env("SHERPA_ONNX_MODEL_DIR", _default_sherpa_parakeet_dir())
+SHERPA_ONNX_NUM_THREADS = _env_int("SHERPA_ONNX_NUM_THREADS", 4)
+SHERPA_ONNX_PROVIDER = _env("SHERPA_ONNX_PROVIDER", "cpu")
+SHERPA_ONNX_MODEL_TYPE = _env("SHERPA_ONNX_MODEL_TYPE", "nemo_transducer")
+SHERPA_ONNX_DECODING_METHOD = _env("SHERPA_ONNX_DECODING_METHOD", "greedy_search")
+SHERPA_ONNX_MAX_ACTIVE_PATHS = _env_int("SHERPA_ONNX_MAX_ACTIVE_PATHS", 4)
+SHERPA_ONNX_MIN_AUDIO_SECONDS = _env_float("SHERPA_ONNX_MIN_AUDIO_SECONDS", 0.18)
 
 GEMINI_LLM_MODEL = _env("GEMINI_LLM_MODEL", "gemini-2.5-flash")
 OPENAI_LLM_MODEL = _env("OPENAI_LLM_MODEL", "gpt-4o")
@@ -105,8 +146,26 @@ SARVAM_TTS_LANGUAGE = _env("SARVAM_TTS_LANGUAGE", "en-IN")
 SARVAM_TTS_SPEAKER = _env("SARVAM_TTS_SPEAKER", "rahul")
 
 FRIDAY_MAX_TOOL_STEPS = _env_int("FRIDAY_MAX_TOOL_STEPS", 5)
+FRIDAY_PREEMPTIVE_GENERATION = _env_bool("FRIDAY_PREEMPTIVE_GENERATION", False)
+FRIDAY_TURN_DETECTOR = _env("FRIDAY_TURN_DETECTOR", "english").lower()
+FRIDAY_TURN_ENDPOINTING_MODE = _env("FRIDAY_TURN_ENDPOINTING_MODE", "dynamic").lower()
+FRIDAY_TURN_UNLIKELY_THRESHOLD = _env_float("FRIDAY_TURN_UNLIKELY_THRESHOLD", -1.0)
 FRIDAY_MIN_ENDPOINTING_DELAY = _env_float("FRIDAY_MIN_ENDPOINTING_DELAY", -1.0)
 FRIDAY_MAX_ENDPOINTING_DELAY = _env_float("FRIDAY_MAX_ENDPOINTING_DELAY", MODE["max_endpointing"])
+FRIDAY_VAD_MIN_SPEECH_DURATION = _env_float("FRIDAY_VAD_MIN_SPEECH_DURATION", 0.04)
+FRIDAY_VAD_MIN_SILENCE_DURATION = _env_float(
+    "FRIDAY_VAD_MIN_SILENCE_DURATION",
+    MODE["vad_min_silence"],
+)
+FRIDAY_VAD_PREFIX_PADDING_DURATION = _env_float(
+    "FRIDAY_VAD_PREFIX_PADDING_DURATION",
+    MODE["vad_prefix_padding"],
+)
+FRIDAY_VAD_ACTIVATION_THRESHOLD = _env_float(
+    "FRIDAY_VAD_ACTIVATION_THRESHOLD",
+    MODE["vad_activation_threshold"],
+)
+FRIDAY_VAD_DEACTIVATION_THRESHOLD = _env_float("FRIDAY_VAD_DEACTIVATION_THRESHOLD", 0.25)
 FRIDAY_MIN_INTERRUPTION_DURATION = _env_float(
     "FRIDAY_MIN_INTERRUPTION_DURATION",
     MODE["interruption_duration"],
@@ -127,9 +186,19 @@ COMMON_TRANSCRIPT_WORDS = {
     "the", "then", "there", "this", "time", "to", "today", "transcribe", "up",
     "update", "weather", "what", "when", "where", "which", "who", "why", "with",
     "world", "would", "you", "calculator", "chrome", "dashboard", "finance",
-    "friday", "livekit", "openai", "sarvam",
+    "friday", "livekit", "openai", "sarvam", "sherpa", "parakeet",
 }
 COMMON_TRANSCRIPT_ACRONYMS = {"AI", "API", "CPU", "GPU", "GPT", "LLM", "STT", "TTS", "VAD", "UI", "URL"}
+
+EnglishModel = None
+MultilingualModel = None
+try:
+    if FRIDAY_TURN_DETECTOR in {"multilingual", "multi", "intl"}:
+        from livekit.plugins.turn_detector.multilingual import MultilingualModel
+    else:
+        from livekit.plugins.turn_detector.english import EnglishModel
+except ImportError:  # pragma: no cover - keeps older local envs bootable.
+    pass
 
 # MCP server running on Windows host
 MCP_SERVER_PORT = 8000
@@ -551,8 +620,35 @@ def _build_stt():
     elif provider == "whisper":
         logger.info("STT -> OpenAI Whisper")
         return lk_openai.STT(model="whisper-1")
+    elif provider in {"sherpa", "sherpa-onnx", "parakeet", "sherpa_parakeet"}:
+        logger.info(
+            "STT -> Local Parakeet (%s, threads=%s, provider=%s)",
+            SHERPA_ONNX_MODEL_DIR,
+            SHERPA_ONNX_NUM_THREADS,
+            SHERPA_ONNX_PROVIDER,
+        )
+        return SherpaParakeetSTT.from_paths(
+            model_dir=SHERPA_ONNX_MODEL_DIR,
+            num_threads=SHERPA_ONNX_NUM_THREADS,
+            provider=SHERPA_ONNX_PROVIDER,
+            model_type=SHERPA_ONNX_MODEL_TYPE,
+            decoding_method=SHERPA_ONNX_DECODING_METHOD,
+            max_active_paths=SHERPA_ONNX_MAX_ACTIVE_PATHS,
+            min_audio_seconds=SHERPA_ONNX_MIN_AUDIO_SECONDS,
+        )
     else:
         raise ValueError(f"Unknown STT_PROVIDER: {provider!r}")
+
+
+def _prewarm_process(proc) -> None:
+    """Warm heavyweight local models before a user joins the room."""
+    provider = _resolve_provider("stt", STT_PROVIDER)
+    if provider not in {"sherpa", "sherpa-onnx", "parakeet", "sherpa_parakeet"}:
+        return
+
+    stt = _build_stt()
+    stt.prewarm()
+    proc.userdata["stt"] = stt
 
 
 def _build_llm():
@@ -601,6 +697,27 @@ def _build_tts():
         raise ValueError(f"Unknown TTS_PROVIDER: {provider!r}")
 
 
+def _build_vad():
+    logger.info(
+        "VAD -> Silero (min_speech=%.2fs, min_silence=%.2fs, prefix=%.2fs, "
+        "activation=%.2f, deactivation=%.2f)",
+        FRIDAY_VAD_MIN_SPEECH_DURATION,
+        FRIDAY_VAD_MIN_SILENCE_DURATION,
+        FRIDAY_VAD_PREFIX_PADDING_DURATION,
+        FRIDAY_VAD_ACTIVATION_THRESHOLD,
+        FRIDAY_VAD_DEACTIVATION_THRESHOLD,
+    )
+    return silero.VAD.load(
+        min_speech_duration=FRIDAY_VAD_MIN_SPEECH_DURATION,
+        min_silence_duration=FRIDAY_VAD_MIN_SILENCE_DURATION,
+        prefix_padding_duration=FRIDAY_VAD_PREFIX_PADDING_DURATION,
+        activation_threshold=FRIDAY_VAD_ACTIVATION_THRESHOLD,
+        deactivation_threshold=FRIDAY_VAD_DEACTIVATION_THRESHOLD,
+        sample_rate=16000,
+        force_cpu=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
@@ -611,13 +728,13 @@ class FridayAgent(Agent):
     All tools are provided via the MCP server on the Windows host.
     """
 
-    def __init__(self, stt, llm, tts) -> None:
+    def __init__(self, stt, llm, tts, vad_model) -> None:
         super().__init__(
             instructions=SYSTEM_PROMPT,
             stt=stt,
             llm=llm,
             tts=tts,
-            vad=silero.VAD.load(),
+            vad=vad_model,
             mcp_servers=[
                 mcp.MCPServerHTTP(
                     url=_mcp_server_url(),
@@ -683,13 +800,69 @@ class FridayAgent(Agent):
 # ---------------------------------------------------------------------------
 
 def _turn_detection() -> str:
-    return "stt" if STT_PROVIDER == "sarvam" else "vad"
+    provider = _resolve_provider("stt", STT_PROVIDER)
+    return "stt" if provider == "sarvam" else "vad"
+
+
+def _turn_detector_model():
+    detector = FRIDAY_TURN_DETECTOR
+    if detector in {"", "off", "none", "false", "vad"}:
+        return _turn_detection()
+
+    threshold = None if FRIDAY_TURN_UNLIKELY_THRESHOLD < 0 else FRIDAY_TURN_UNLIKELY_THRESHOLD
+    if detector in {"english", "en"}:
+        if EnglishModel is not None:
+            logger.info("Turn detector -> LiveKit English EOU model")
+            return EnglishModel(unlikely_threshold=threshold)
+    elif detector in {"multilingual", "multi", "intl"}:
+        if MultilingualModel is not None:
+            logger.info("Turn detector -> LiveKit Multilingual EOU model")
+            return MultilingualModel(unlikely_threshold=threshold)
+    else:
+        logger.warning("Unknown FRIDAY_TURN_DETECTOR=%r; falling back to VAD turn detection", detector)
+        return _turn_detection()
+
+    logger.warning("LiveKit turn detector plugin is unavailable; falling back to VAD turn detection")
+    return _turn_detection()
 
 
 def _endpointing_delay() -> float:
     if FRIDAY_MIN_ENDPOINTING_DELAY >= 0:
         return FRIDAY_MIN_ENDPOINTING_DELAY
-    return {"sarvam": 0.07, "whisper": 0.3}.get(STT_PROVIDER, 0.1)
+    provider = _resolve_provider("stt", STT_PROVIDER)
+    return {
+        "sarvam": 0.07,
+        "whisper": 0.3,
+        "sherpa": 0.25,
+        "sherpa-onnx": 0.25,
+        "sherpa_parakeet": 0.25,
+        "parakeet": 0.25,
+    }.get(provider, 0.1)
+
+
+def _build_turn_handling() -> dict[str, Any]:
+    endpointing_mode = (
+        FRIDAY_TURN_ENDPOINTING_MODE
+        if FRIDAY_TURN_ENDPOINTING_MODE in {"fixed", "dynamic"}
+        else "dynamic"
+    )
+    return {
+        "turn_detection": _turn_detector_model(),
+        "endpointing": {
+            "mode": endpointing_mode,
+            "min_delay": _endpointing_delay(),
+            "max_delay": FRIDAY_MAX_ENDPOINTING_DELAY,
+        },
+        "interruption": {
+            "enabled": True,
+            "min_duration": FRIDAY_MIN_INTERRUPTION_DURATION,
+            "min_words": FRIDAY_MIN_INTERRUPTION_WORDS,
+            "resume_false_interruption": True,
+        },
+        "preemptive_generation": {
+            "enabled": FRIDAY_PREEMPTIVE_GENERATION,
+        },
+    }
 
 
 async def entrypoint(ctx: JobContext) -> None:
@@ -698,20 +871,17 @@ async def entrypoint(ctx: JobContext) -> None:
         ctx.room.name, FRIDAY_MODE, STT_PROVIDER, LLM_PROVIDER, TTS_PROVIDER,
     )
 
-    stt = _build_stt()
+    stt = ctx.proc.userdata.get("stt")
+    if stt is None:
+        stt = _build_stt()
+        stt.prewarm()
     llm = _build_llm()
     tts = _build_tts()
+    vad_model = _build_vad()
 
     session = AgentSession(
-        turn_detection=_turn_detection(),
-        min_endpointing_delay=_endpointing_delay(),
-        max_endpointing_delay=FRIDAY_MAX_ENDPOINTING_DELAY,
-        allow_interruptions=True,
-        resume_false_interruption=True,
-        min_interruption_duration=FRIDAY_MIN_INTERRUPTION_DURATION,
-        min_interruption_words=FRIDAY_MIN_INTERRUPTION_WORDS,
+        turn_handling=_build_turn_handling(),
         max_tool_steps=FRIDAY_MAX_TOOL_STEPS,
-        preemptive_generation=True,
         use_tts_aligned_transcript=True,
         userdata={"publish_debug": lambda event, data: _publish_debug(ctx, event, data)},
     )
@@ -724,14 +894,20 @@ async def entrypoint(ctx: JobContext) -> None:
             "sttProvider": STT_PROVIDER,
             "llmProvider": LLM_PROVIDER,
             "ttsProvider": TTS_PROVIDER,
+            "turnDetector": FRIDAY_TURN_DETECTOR,
+            "turnEndpointingMode": FRIDAY_TURN_ENDPOINTING_MODE,
+            "preemptiveGeneration": FRIDAY_PREEMPTIVE_GENERATION,
             "maxEndpointingDelayMs": _ms(FRIDAY_MAX_ENDPOINTING_DELAY),
+            "vadMinSilenceMs": _ms(FRIDAY_VAD_MIN_SILENCE_DURATION),
+            "vadPrefixPaddingMs": _ms(FRIDAY_VAD_PREFIX_PADDING_DURATION),
+            "vadActivationThreshold": FRIDAY_VAD_ACTIVATION_THRESHOLD,
             "minInterruptionDurationMs": _ms(FRIDAY_MIN_INTERRUPTION_DURATION),
             "maxToolSteps": FRIDAY_MAX_TOOL_STEPS,
         },
     )
 
     await session.start(
-        agent=FridayAgent(stt=stt, llm=llm, tts=tts),
+        agent=FridayAgent(stt=stt, llm=llm, tts=tts, vad_model=vad_model),
         room=ctx.room,
     )
 
@@ -741,7 +917,15 @@ async def entrypoint(ctx: JobContext) -> None:
 # ---------------------------------------------------------------------------
 
 def main():
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, agent_name=FRIDAY_AGENT_NAME))
+    cli.run_app(
+        WorkerOptions(
+            entrypoint_fnc=entrypoint,
+            prewarm_fnc=_prewarm_process,
+            agent_name=FRIDAY_AGENT_NAME,
+            num_idle_processes=1,
+            initialize_process_timeout=45.0,
+        )
+    )
 
 def dev():
     """Wrapper to run the agent in dev mode automatically."""
